@@ -380,6 +380,108 @@ def _build_correlation_section(inc, sty):
     return elements
 
 
+def _build_source_reputation_section(inc, sty):
+    """Source reputation banner — shows download origin and its trust score."""
+    source = inc.get("source") or {}
+    reputation = inc.get("source_reputation") or {}
+    domain = source.get("domain", "") or inc.get("source_domain", "")
+    ip = source.get("ip", "") or inc.get("source_ip", "")
+
+    if not domain and not ip:
+        return []
+
+    elements = []
+    elements.append(Paragraph("SOURCE REPUTATION", sty["section"]))
+
+    score = reputation.get("score", 0) if reputation else 0
+    label = reputation.get("label", "CLEAN") if reputation else "CLEAN"
+    total_files = reputation.get("total_files", 0) if reputation else 0
+    mal_files = reputation.get("malicious_files", 0) if reputation else 0
+    first_seen = reputation.get("first_seen", "") if reputation else ""
+    last_seen = reputation.get("last_seen", "") if reputation else ""
+    incidents_list = reputation.get("incidents", []) if reputation else []
+
+    # Choose background colour based on label
+    if label == "BLACKLISTED":
+        bg = HexColor("#fde8e8")      # red tint
+        label_color = HexColor("#b91c1c")
+    elif label == "MALICIOUS":
+        bg = HexColor("#fff3e0")      # orange tint
+        label_color = HexColor("#c2410c")
+    elif label == "SUSPICIOUS":
+        bg = HexColor("#fffbe6")      # amber tint
+        label_color = HexColor("#b45309")
+    else:
+        bg = HexColor("#ecfdf5")      # green tint
+        label_color = HexColor("#15803d")
+
+    # Build content lines
+    parts = []
+
+    # Source identity
+    src_str = domain or ip
+    if domain and ip and ip != domain:
+        src_str = f"{domain} ({ip})"
+    parts.append(f"<b>Download Source:</b>  {_esc(src_str)}")
+
+    # Score + label
+    parts.append(
+        f"<b>Reputation Score:</b>  {score}/100  —  "
+        f"<font color='{label_color}'><b>{label}</b></font>"
+    )
+
+    # File stats
+    if total_files > 0:
+        parts.append(
+            f"<b>Files Observed:</b>  {total_files} total, "
+            f"{mal_files} malicious ({round(mal_files / max(total_files, 1) * 100)}% threat ratio)"
+        )
+
+    # Timestamps
+    if first_seen:
+        ts_str = f"<b>First Seen:</b>  {_esc(first_seen)}"
+        if last_seen and last_seen != first_seen:
+            ts_str += f"  |  <b>Last Seen:</b>  {_esc(last_seen)}"
+        parts.append(ts_str)
+
+    # Related incidents
+    if incidents_list:
+        parts.append(
+            f"<b>Linked Incidents:</b>  "
+            + ", ".join(f"#{_esc(str(iid))}" for iid in incidents_list[:10])
+        )
+
+    # Warning note if score is high
+    if score >= 31:
+        parts.append(
+            "<i>⚠ This source has a history of distributing malicious files. "
+            "Exercise extreme caution with any files originating from this source.</i>"
+        )
+
+    body_p = Paragraph("<br/>".join(parts), sty["body"])
+
+    inner = Table(
+        [[body_p]],
+        colWidths=[CONTENT_W - 16],
+    )
+    inner.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), bg),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("ROUNDEDCORNERS", [4, 4, 4, 4]),
+                ("BOX", (0, 0), (-1, -1), 0.5, label_color),
+            ]
+        )
+    )
+    elements.append(inner)
+    elements.append(Spacer(1, 10))
+    return elements
+
+
 def _build_metadata_table(inc, sty):
     """Two-column label/value metadata table."""
     elements = []
@@ -427,9 +529,13 @@ def _build_metadata_table(inc, sty):
     for label, value in raw_rows:
         label_p = Paragraph(f"<b>{label}</b>", sty["label"])
         if label == "MD5 Hash":
-            value_p = Paragraph(_esc(_safe(inc.get("md5"))), sty["mono"])
+            hashes = _safe_dict(inc.get("hashes"))
+            md5_val = hashes.get("md5") or inc.get("md5")
+            value_p = Paragraph(_esc(_safe(md5_val)), sty["mono"])
         elif label == "SHA256 Hash":
-            value_p = Paragraph(_esc(_safe(inc.get("sha256"))), sty["mono_small"])
+            hashes = _safe_dict(inc.get("hashes"))
+            sha256_val = hashes.get("sha256") or inc.get("sha256")
+            value_p = Paragraph(_esc(_safe(sha256_val)), sty["mono_small"])
         else:
             value_p = Paragraph(str(value), sty["body_small"])
         table_data.append([label_p, value_p])
@@ -815,6 +921,9 @@ def generate_pdf_report(incident: dict) -> bytes:
 
         # 2 — Correlation warning (conditional)
         story.extend(_build_correlation_section(incident, sty))
+
+        # 2.5 — Source reputation (conditional — only if source info exists)
+        story.extend(_build_source_reputation_section(incident, sty))
 
         # 3 — File metadata table
         story.extend(_build_metadata_table(incident, sty))

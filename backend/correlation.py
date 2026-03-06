@@ -1,9 +1,43 @@
 import json
+import re
 from database import get_all_iocs_except
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Check if an IP is in a private/reserved range (should not trigger correlation)."""
+    try:
+        parts = ip.split(".")
+        if len(parts) != 4:
+            return False
+        octets = [int(p) for p in parts]
+        # 10.0.0.0/8
+        if octets[0] == 10:
+            return True
+        # 172.16.0.0/12
+        if octets[0] == 172 and 16 <= octets[1] <= 31:
+            return True
+        # 192.168.0.0/16
+        if octets[0] == 192 and octets[1] == 168:
+            return True
+        # 169.254.0.0/16 (link-local)
+        if octets[0] == 169 and octets[1] == 254:
+            return True
+    except (ValueError, IndexError):
+        pass
+    return False
+
+
+# Simple regex to identify IP-shaped strings for filtering
+_RE_IP = re.compile(
+    r"^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$"
+)
+
 
 def flatten_iocs(iocs_dict: dict) -> set:
     """
     Flattens an IOC dictionary into a single set of unique string values.
+    Filters out private/reserved IPs to avoid false correlation matches.
     Expects format: {"ips": [...], "domains": [...], "urls": [...], "registry_keys": [...], "file_paths": [...]}
     """
     flattened = set()
@@ -14,7 +48,11 @@ def flatten_iocs(iocs_dict: dict) -> set:
         if isinstance(values, list):
             for val in values:
                 if isinstance(val, str) and val.strip():
-                    flattened.add(val.strip())
+                    clean = val.strip()
+                    # Skip private IPs — they cause false correlations
+                    if _RE_IP.match(clean) and _is_private_ip(clean):
+                        continue
+                    flattened.add(clean)
                     
     return flattened
 

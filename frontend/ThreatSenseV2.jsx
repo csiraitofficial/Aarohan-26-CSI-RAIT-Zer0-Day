@@ -367,8 +367,8 @@ function HistoryModal({ incidents, onClose, onSelect }) {
               const S = SEV[sevKey] || SEV.UNKNOWN;
               return (
                 <button
-                  key={inc.id || i}
-                  onClick={() => onSelect(inc.id)}
+                  key={inc.incident_id || i}
+                  onClick={() => onSelect(inc.incident_id)}
                   style={{ textAlign: "left", display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, border: `1px solid ${G.border}`, background: G.surface, cursor: "pointer", transition: "all .15s", width: "100%" }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = G.borderHover; e.currentTarget.style.background = G.card; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = G.border; e.currentTarget.style.background = G.surface; }}
@@ -377,7 +377,7 @@ function HistoryModal({ incidents, onClose, onSelect }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 500, color: G.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inc.filename}</div>
                     <div style={{ fontSize: 11, color: G.muted, fontFamily: "Geist Mono, monospace" }}>
-                      #{inc.id} · {inc.threat_class || "Unknown"}
+                      #{inc.incident_id} · {inc.threat_class || "Unknown"}
                     </div>
                   </div>
                   <Icons.ChevR />
@@ -613,6 +613,64 @@ function ReportView({ data, onReset }) {
           </div>
         </div>
       )}
+
+      {/* Source Reputation banner */}
+      {(() => {
+        const src = data.source || {};
+        const rep = data.source_reputation || {};
+        const srcDomain = src.domain || data.source_domain || "";
+        const srcIp = src.ip || data.source_ip || "";
+        if (!srcDomain && !srcIp) return null;
+        const score = rep.score || 0;
+        const label = rep.label || "CLEAN";
+        const malFiles = rep.malicious_files || 0;
+        const totalFiles = rep.total_files || 0;
+        const linkedIncs = rep.incidents || [];
+        const ratio = totalFiles > 0 ? Math.round((malFiles / totalFiles) * 100) : 0;
+        const RC = label === "BLACKLISTED" ? { color: G.red, bg: "rgba(239,68,68,.06)", border: "rgba(239,68,68,.25)" }
+          : label === "MALICIOUS" ? { color: G.orange, bg: "rgba(249,115,22,.06)", border: "rgba(249,115,22,.25)" }
+            : label === "SUSPICIOUS" ? { color: G.amber, bg: "rgba(245,158,11,.06)", border: "rgba(245,158,11,.25)" }
+              : { color: G.green, bg: "rgba(34,197,94,.04)", border: "rgba(34,197,94,.15)" };
+        return (
+          <div style={{ padding: "14px 16px", borderRadius: 8, border: `1px solid ${RC.border}`, background: RC.bg, marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <Icons.Globe />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: G.text }}>Source Reputation</span>
+                  <span className="badge" style={{ color: RC.color, background: RC.bg, borderColor: RC.border, fontSize: 10 }}>{label}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, color: G.textDim, fontFamily: "Geist Mono, monospace" }}>
+                    {srcDomain}{srcIp && srcIp !== srcDomain ? ` (${srcIp})` : ""}
+                  </span>
+                </div>
+                {/* Score bar */}
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, color: G.muted }}>Reputation Score</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: RC.color, fontFamily: "Geist Mono, monospace" }}>{score}/100</span>
+                  </div>
+                  <div className="progress-track" style={{ height: 4 }}>
+                    <div className="progress-fill" style={{ width: `${score}%`, background: RC.color, transition: "width .6s ease" }} />
+                  </div>
+                </div>
+                {/* Stats row */}
+                <div style={{ display: "flex", gap: 16, fontSize: 11, color: G.textDim }}>
+                  {totalFiles > 0 && <span><strong>{totalFiles}</strong> files observed</span>}
+                  {malFiles > 0 && <span style={{ color: RC.color }}><strong>{malFiles}</strong> malicious ({ratio}%)</span>}
+                  {linkedIncs.length > 0 && <span>Incidents: {linkedIncs.slice(0, 5).map(id => `#${id}`).join(", ")}</span>}
+                </div>
+                {score >= 31 && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: RC.color, fontStyle: "italic", lineHeight: 1.5 }}>
+                    ⚠ This source has a history of distributing malicious files. Exercise extreme caution.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>

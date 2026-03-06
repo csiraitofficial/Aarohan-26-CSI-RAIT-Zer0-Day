@@ -1,0 +1,23 @@
+﻿=== Test 1: Simple text file ===
+  file_type:    Binary File
+  is_pe:        False
+  entropy:      4.4944
+  risk_score:   5
+  IPs found:    ['193.42.11.23']
+  URLs found:   ['http://evil.ru/payload.exe']
+  verdict:      MINIMAL RISK ù binary appears benign. File type: Binary File. Extracted IOCs: 1 IP(s), 1 domain(s), 1 URL(s)....
+  [PASS]
+
+=== Test 2: Fake MZ header ===
+  file_type:    Windows PE Executable
+  is_pe:        True
+  pe_warnings:  ['pefile library not installed ù PE analysis limited']
+  [PASS]
+
+=== Test 3: Empty file ===
+  [PASS]
+
+=== Test 4: None input ===
+  [PASS]
+
+=== All binary analyzer tests passed ===

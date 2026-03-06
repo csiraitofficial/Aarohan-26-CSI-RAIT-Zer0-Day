@@ -32,9 +32,32 @@ def init_db():
             vt_json TEXT,
             llm_json TEXT,
             correlation_json TEXT,
-            findings_json TEXT
+            findings_json TEXT,
+            source_domain TEXT,
+            source_ip TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS source_reputation (
+            source      TEXT PRIMARY KEY,
+            source_type TEXT,
+            score       INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0,
+            malicious_files INTEGER DEFAULT 0,
+            first_seen  TEXT,
+            last_seen   TEXT,
+            incidents   TEXT DEFAULT '[]'
+        )
+    ''')
+
+    # ── Schema migrations for existing databases ──
+    # ALTER TABLE is safe to retry — silently ignore if column already exists
+    for col, col_type in [("source_domain", "TEXT"), ("source_ip", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE incidents ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.commit()
     conn.close()
 
@@ -70,6 +93,10 @@ def save_incident(data: dict) -> int:
     if "entropy_verdict" in data:
         findings["_mapped_entropy_verdict"] = data["entropy_verdict"]
     
+    # Source info (from file_monitor Chrome integration)
+    source_domain = data.get("source_domain", "")
+    source_ip = data.get("source_ip", "")
+
     # Complex fields to JSON
     iocs_json = json.dumps(data.get("iocs", {}))
     vt_json = json.dumps(data.get("vt_result", {}))
@@ -81,12 +108,14 @@ def save_incident(data: dict) -> int:
         INSERT INTO incidents (
             filename, timestamp, input_type, md5, sha1, sha256,
             size_bytes, entropy, risk_score, severity, threat_class,
-            iocs_json, vt_json, llm_json, correlation_json, findings_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            iocs_json, vt_json, llm_json, correlation_json, findings_json,
+            source_domain, source_ip
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         filename, timestamp, input_type, md5, sha1, sha256,
         size_bytes, entropy, risk_score, severity, threat_class,
-        iocs_json, vt_json, llm_json, correlation_json, findings_json
+        iocs_json, vt_json, llm_json, correlation_json, findings_json,
+        source_domain, source_ip
     ))
     
     incident_id = cursor.lastrowid
@@ -110,7 +139,12 @@ def get_all_incidents() -> list:
     rows = cursor.fetchall()
     conn.close()
     
-    return [dict(row) for row in rows]
+    results = []
+    for row in rows:
+        d = dict(row)
+        d["incident_id"] = d.pop("id")  # match frontend contract
+        results.append(d)
+    return results
 
 def get_incident_by_id(incident_id: int) -> dict:
     """Returns full row with all JSON parsed"""
@@ -140,7 +174,11 @@ def get_incident_by_id(incident_id: int) -> dict:
         "size_bytes": row_dict.get("size_bytes"),
         "entropy": row_dict.get("entropy"),
         "risk_score": row_dict.get("risk_score"),
-        "timestamp": row_dict.get("timestamp")
+        "severity": row_dict.get("severity", "UNKNOWN"),
+        "threat_class": row_dict.get("threat_class", ""),
+        "timestamp": row_dict.get("timestamp"),
+        "source_domain": row_dict.get("source_domain", ""),
+        "source_ip": row_dict.get("source_ip", ""),
     }
     
     # Reconstruct JSON objects
@@ -185,6 +223,109 @@ def get_all_iocs_except(sha256: str) -> list:
         past_iocs.append(data)
         
     return past_iocs
+
+# ─── Source reputation helpers ────────────────────────────────────────────────
+
+SEVERITY_POINTS = {"CRITICAL": 40, "HIGH": 30, "MEDIUM": 20}
+
+
+def update_source_reputation(source: str, source_type: str, severity: str, incident_id: int):
+    """Upsert the reputation score for a source domain/IP."""
+    points = SEVERITY_POINTS.get(severity, 0)
+    if points == 0:
+        return  # only track MEDIUM+ severity
+
+    now = datetime.utcnow().isoformat() + "Z"
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT score, total_files, malicious_files, incidents FROM source_reputation WHERE source = ?", (source,))
+    row = cursor.fetchone()
+
+    if row:
+        old_score, total, mal, inc_json = row
+        inc_list = json.loads(inc_json or "[]")
+        if incident_id not in inc_list:
+            inc_list.append(incident_id)
+        new_score = min(old_score + points, 100)
+        cursor.execute('''
+            UPDATE source_reputation
+            SET score = ?, total_files = ?, malicious_files = ?, last_seen = ?, incidents = ?
+            WHERE source = ?
+        ''', (new_score, total + 1, mal + 1, now, json.dumps(inc_list), source))
+    else:
+        cursor.execute('''
+            INSERT INTO source_reputation (source, source_type, score, total_files, malicious_files, first_seen, last_seen, incidents)
+            VALUES (?, ?, ?, 1, 1, ?, ?, ?)
+        ''', (source, source_type, points, now, now, json.dumps([incident_id])))
+
+    conn.commit()
+    conn.close()
+
+
+def bump_source_total(source: str, source_type: str):
+    """Record that a file was downloaded from this source (even if benign)."""
+    now = datetime.utcnow().isoformat() + "Z"
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT total_files FROM source_reputation WHERE source = ?", (source,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute("UPDATE source_reputation SET total_files = ?, last_seen = ? WHERE source = ?",
+                       (row[0] + 1, now, source))
+    else:
+        cursor.execute('''
+            INSERT INTO source_reputation (source, source_type, score, total_files, malicious_files, first_seen, last_seen, incidents)
+            VALUES (?, ?, 0, 1, 0, ?, ?, '[]')
+        ''', (source, source_type, now, now))
+
+    conn.commit()
+    conn.close()
+
+
+def get_source_reputation(source: str) -> dict | None:
+    """Look up reputation for a domain or IP. Returns None if unknown."""
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM source_reputation WHERE source = ?", (source,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["incidents"] = json.loads(d.get("incidents") or "[]")
+    # Add label
+    s = d["score"]
+    if s >= 61:
+        d["label"] = "BLACKLISTED"
+    elif s >= 31:
+        d["label"] = "MALICIOUS"
+    elif s >= 1:
+        d["label"] = "SUSPICIOUS"
+    else:
+        d["label"] = "CLEAN"
+    return d
+
+
+def get_all_blacklisted_sources(min_score: int = 1) -> list:
+    """Return all sources with reputation score >= min_score."""
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM source_reputation WHERE score >= ? ORDER BY score DESC", (min_score,))
+    rows = cursor.fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        d = dict(row)
+        d["incidents"] = json.loads(d.get("incidents") or "[]")
+        s = d["score"]
+        d["label"] = "BLACKLISTED" if s >= 61 else "MALICIOUS" if s >= 31 else "SUSPICIOUS" if s >= 1 else "CLEAN"
+        results.append(d)
+    return results
+
 
 if __name__ == "__main__":
     init_db()
