@@ -224,6 +224,38 @@ def get_all_iocs_except(sha256: str) -> list:
         
     return past_iocs
 
+def get_incidents_by_sha256(sha256: str) -> list:
+    """Returns all incidents with the same SHA256, ordered by timestamp.
+    Used by propagation chain detection to find the same malware across sources."""
+    if not sha256:
+        return []
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT id, filename, timestamp, sha256,
+               source_domain, source_ip, severity
+        FROM incidents
+        WHERE sha256 = ?
+        ORDER BY timestamp ASC
+    ''', (sha256,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        results.append({
+            "incident_id": row["id"],
+            "filename": row["filename"],
+            "timestamp": row["timestamp"],
+            "source_domain": row["source_domain"] or "",
+            "source_ip": row["source_ip"] or "",
+            "severity": row["severity"] or "UNKNOWN",
+        })
+    return results
+
 # ─── Source reputation helpers ────────────────────────────────────────────────
 
 SEVERITY_POINTS = {"CRITICAL": 40, "HIGH": 30, "MEDIUM": 20}

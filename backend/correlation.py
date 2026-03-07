@@ -1,6 +1,89 @@
 import json
 import re
-from database import get_all_iocs_except
+from database import get_all_iocs_except, get_incidents_by_sha256
+
+
+def detect_propagation_chain(sha256: str, current_source_domain: str,
+                              current_source_ip: str, current_incident_id: int) -> dict:
+    """
+    Detect if the same malware (by SHA256) has been seen from different sources.
+    Builds a chronological propagation chain showing how the file spread.
+
+    Returns:
+        dict with chain_detected, chain_length, chain, chain_message, etc.
+    """
+    result = {
+        "chain_detected": False,
+        "chain_length": 0,
+        "chain": [],
+        "chain_message": "No propagation chain detected.",
+    }
+
+    if not sha256:
+        return result
+
+    current_source = current_source_domain or current_source_ip or ""
+    if not current_source:
+        return result
+
+    try:
+        past = get_incidents_by_sha256(sha256)
+    except Exception:
+        return result
+
+    # Build unique source nodes from past incidents (chronological order)
+    seen_sources = {}  # source -> first occurrence dict
+    for inc in past:
+        src = inc.get("source_domain") or inc.get("source_ip") or ""
+        if not src:
+            continue
+        # Skip if same source as current (not a hop)
+        # Keep the first occurrence per source for the chain
+        if src not in seen_sources:
+            seen_sources[src] = {
+                "source": src,
+                "source_ip": inc.get("source_ip", ""),
+                "incident_id": inc.get("incident_id"),
+                "filename": inc.get("filename", ""),
+                "timestamp": inc.get("timestamp", ""),
+                "severity": inc.get("severity", "UNKNOWN"),
+            }
+
+    # Add current source to chain if not already present
+    if current_source not in seen_sources:
+        seen_sources[current_source] = {
+            "source": current_source,
+            "source_ip": current_source_ip or "",
+            "incident_id": current_incident_id,
+            "filename": "",
+            "timestamp": "",
+            "severity": "",
+        }
+
+    # A chain requires at least 2 distinct sources
+    if len(seen_sources) < 2:
+        return result
+
+    # Build chronological chain (ordered by first appearance)
+    chain = list(seen_sources.values())
+
+    # Build human-readable chain string: Source1 → Source2 → Source3
+    chain_str = " → ".join(
+        f"{node['source']} (#{node['incident_id']})"
+        for node in chain
+    )
+
+    result["chain_detected"] = True
+    result["chain_length"] = len(chain)
+    result["chain"] = chain
+    result["chain_message"] = (
+        f"PROPAGATION CHAIN: This malware has been observed spreading across "
+        f"{len(chain)} distinct sources: {chain_str}. "
+        f"This indicates active malware propagation between hosts. "
+        f"All sources in this chain should be investigated and isolated."
+    )
+
+    return result
 
 
 def _is_private_ip(ip: str) -> bool:

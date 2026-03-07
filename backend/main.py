@@ -64,7 +64,7 @@ from script_analyzer import analyze_script
 from virustotal import check_hash
 
 # Correlation engine (required)
-from correlation import run_correlation
+from correlation import run_correlation, detect_propagation_chain
 
 # Email analyzer (bonus — graceful if missing)
 try:
@@ -438,13 +438,25 @@ async def analyze_file(
     elapsed = round(time.time() - start, 2)
     log.info(f"━━━ Analysis complete: {filename} → incident #{incident_id} in {elapsed}s ━━━")
 
-    # ── Step 6: Look up source reputation for response ─────────────────
+    # ── Step 6a: Look up source reputation for response ────────────────
     source_rep = None
     if source_domain:
         try:
             source_rep = get_source_reputation(source_domain)
         except Exception:
             pass
+
+    # ── Step 6b: Detect propagation chain ──────────────────────────────
+    prop_chain = {"chain_detected": False}
+    if sha256 and (source_domain or source_ip):
+        try:
+            prop_chain = detect_propagation_chain(
+                sha256, source_domain, source_ip, incident_id
+            )
+            if prop_chain.get("chain_detected"):
+                log.info(f"  Chain: ⚠ propagation chain of {prop_chain['chain_length']} sources detected!")
+        except Exception as e:
+            log.warning(f"  Chain detection error: {e}")
 
     response = _build_response(findings, filename, vt_result, correlation,
                                 llm_report, incident_id)
@@ -453,6 +465,7 @@ async def analyze_file(
         response["source"] = {"domain": source_domain, "ip": source_ip}
     if source_rep:
         response["source_reputation"] = source_rep
+    response["propagation_chain"] = prop_chain
 
     return JSONResponse(content=response)
 
@@ -523,12 +536,21 @@ async def get_incident(incident_id: int):
     # Enrich with live source reputation (score may have grown since original scan)
     src_domain = incident.get("source_domain", "")
     src_ip = incident.get("source_ip", "")
+    inc_sha256 = incident.get("hashes", {}).get("sha256", "")
     if src_domain:
         incident["source"] = {"domain": src_domain, "ip": src_ip}
         try:
             rep = get_source_reputation(src_domain)
             if rep:
                 incident["source_reputation"] = rep
+        except Exception:
+            pass
+
+    # Enrich with live propagation chain
+    if inc_sha256 and (src_domain or src_ip):
+        try:
+            chain = detect_propagation_chain(inc_sha256, src_domain, src_ip, incident_id)
+            incident["propagation_chain"] = chain
         except Exception:
             pass
 
@@ -562,12 +584,21 @@ async def export_pdf(incident_id: int):
     # Enrich with live source reputation for the PDF
     src_domain = incident.get("source_domain", "")
     src_ip = incident.get("source_ip", "")
+    inc_sha256 = incident.get("hashes", {}).get("sha256", "")
     if src_domain:
         incident["source"] = {"domain": src_domain, "ip": src_ip}
         try:
             rep = get_source_reputation(src_domain)
             if rep:
                 incident["source_reputation"] = rep
+        except Exception:
+            pass
+
+    # Enrich with live propagation chain for the PDF
+    if inc_sha256 and (src_domain or src_ip):
+        try:
+            chain = detect_propagation_chain(inc_sha256, src_domain, src_ip, incident_id)
+            incident["propagation_chain"] = chain
         except Exception:
             pass
 

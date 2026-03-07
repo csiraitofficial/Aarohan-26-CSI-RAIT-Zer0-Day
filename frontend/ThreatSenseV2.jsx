@@ -672,6 +672,47 @@ function ReportView({ data, onReset }) {
         );
       })()}
 
+      {/* Propagation Chain banner */}
+      {data.propagation_chain?.chain_detected && (() => {
+        const pc = data.propagation_chain;
+        const chain = pc.chain || [];
+        return (
+          <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid rgba(239,68,68,.25)", background: "rgba(239,68,68,.06)", marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <Icons.Zap />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: G.red, marginBottom: 6 }}>
+                  ⚠ ATTACK PROPAGATION CHAIN — {pc.chain_length} Sources
+                </div>
+                {/* Chain visualization */}
+                <div style={{ display: "flex", alignItems: "center", gap: 0, flexWrap: "wrap", marginBottom: 10 }}>
+                  {chain.map((node, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center" }}>
+                      <div style={{
+                        padding: "6px 12px", borderRadius: 6,
+                        background: "rgba(239,68,68,.1)", border: "1px solid rgba(239,68,68,.2)",
+                        fontSize: 11, fontFamily: "Geist Mono, monospace", color: G.text,
+                      }}>
+                        <div style={{ fontWeight: 600 }}>{node.source}</div>
+                        <div style={{ fontSize: 9, color: G.muted }}>#{node.incident_id}</div>
+                      </div>
+                      {i < chain.length - 1 && (
+                        <span style={{ margin: "0 6px", color: G.red, fontSize: 14, fontWeight: 700 }}>→</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: G.textDim, lineHeight: 1.5 }}>
+                  This malware has spread across <strong>{pc.chain_length} distinct sources</strong>.
+                  Each hop indicates the file was forwarded from one compromised host to another.
+                  All sources should be investigated and isolated.
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
         {/* Executive summary */}

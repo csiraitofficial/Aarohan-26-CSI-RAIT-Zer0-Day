@@ -79,19 +79,36 @@ STEPS = [
 
 # ─── Safe window management ──────────────────────────────────────────────────
 
-def _safe_destroy(root):
-    """Destroy a customtkinter window, suppressing animation cleanup errors."""
+# Persistent hidden root — CTk() must only be created ONCE per process.
+# Creating multiple CTk() instances leaves ghost Tcl interpreters = extra windows.
+_persistent_root = None
+
+def _get_root():
+    """Return the single persistent hidden CTk root, creating it on first call."""
+    global _persistent_root
+    import customtkinter as ctk
+    if _persistent_root is None:
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+        _persistent_root = ctk.CTk()
+        _persistent_root.withdraw()              # hide from taskbar
+        _persistent_root.attributes("-alpha", 0)  # fully invisible
+        _persistent_root.geometry("1x1+-9999+-9999")  # off-screen, 1x1 pixel
+    return _persistent_root
+
+
+def _safe_destroy(win):
+    """Destroy a CTkToplevel popup, suppressing animation cleanup errors."""
     try:
-        # Cancel ALL pending after callbacks to prevent 'invalid command' errors
-        for after_id in root.tk.eval("after info").split():
+        for after_id in win.tk.eval("after info").split():
             try:
-                root.after_cancel(after_id)
+                win.after_cancel(after_id)
             except Exception:
                 pass
     except Exception:
         pass
     try:
-        root.destroy()
+        win.destroy()
     except Exception:
         pass
 
@@ -103,16 +120,18 @@ def _center(win, w, h):
 
 
 def _mk_root(title, w, h):
+    """Create a CTkToplevel popup window attached to the persistent root."""
     import customtkinter as ctk
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("dark-blue")
-    root = ctk.CTk()
-    root.title(title)
-    root.configure(fg_color=C["bg"])
-    root.resizable(False, False)
-    root.attributes("-topmost", True)
-    _center(root, w, h)
-    return root
+    parent = _get_root()
+    win = ctk.CTkToplevel(parent)
+    win.title(title)
+    win.configure(fg_color=C["bg"])
+    win.resizable(False, False)
+    win.attributes("-topmost", True)
+    win.focus_force()
+    _center(win, w, h)
+    win.lift()
+    return win
 
 
 def _topbar(root, right_text="", right_color=None):
@@ -274,7 +293,7 @@ def _show_scan_popup(filepath: str, source: dict = None) -> bool:
                   text_color=C["dim"], corner_radius=6, height=34, width=70,
                   command=no).pack(side="right")
 
-    root.mainloop()
+    root.wait_window()
     return result["v"]
 
 
@@ -413,7 +432,7 @@ def _show_progress_and_scan(filepath: str, backend_url: str, source: dict = None
     root.after(300, poll)
     threading.Thread(target=bg, daemon=True).start()
 
-    root.mainloop()
+    root.wait_window()
 
     if state["error"]:
         raise RuntimeError(state["error"])
@@ -433,10 +452,10 @@ def _show_result_popup(filename: str, filepath: str, result: dict, backend_url: 
     iid     = result.get("incident_id", "?")
     sc      = SEV.get(sev, C["muted"])
 
-    action = {"deleted": False}
+    action = {"deleted": False, "open_browser": False}
 
-    root = _mk_root("ThreatSense", 490, 460)
-    root.protocol("WM_DELETE_WINDOW", lambda: _safe_destroy(root))
+    root = _mk_root("ThreatSense", 490, 560)
+    root.protocol("WM_DELETE_WINDOW", lambda: _safe_destroy(root))  # X = close only, no browser
 
     _topbar(root, f"#{iid}", C["muted"])
 
@@ -553,16 +572,20 @@ def _show_result_popup(filename: str, filepath: str, result: dict, backend_url: 
         command=do_view_report,
     ).pack(side="left", padx=(8, 0))
 
+    def do_done():
+        action["open_browser"] = True
+        _safe_destroy(root)
+
     # Close / dismiss
     ctk.CTkButton(
         btn_row, text="Done", font=ctk.CTkFont(size=13, weight="bold"),
         fg_color=C["text"], hover_color="#d4d4d8",
         text_color="#09090b", corner_radius=6, height=34, width=80,
-        command=lambda: _safe_destroy(root),
+        command=do_done,
     ).pack(side="right")
 
-    root.mainloop()
-    return action["deleted"]
+    root.wait_window()
+    return action
 
 
 # ─── Error popup ──────────────────────────────────────────────────────────────
@@ -590,13 +613,19 @@ def _show_error_popup(filename: str, error: str):
                   text_color=C["dim"], corner_radius=6, height=30, width=60,
                   command=lambda: _safe_destroy(root)).pack(pady=(0, 12))
 
-    root.mainloop()
+    root.wait_window()
 
 
 # ─── File utilities ───────────────────────────────────────────────────────────
 
 def _is_temp_file(fp):
     return os.path.splitext(fp)[1].lower() in TEMP_EXTENSIONS
+
+
+def _is_own_report(fp):
+    """Skip ThreatSense's own PDF reports landing in Downloads."""
+    fn = os.path.basename(fp)
+    return fn.startswith("ThreatSense_Report_") and fn.endswith(".pdf")
 
 
 def _wait_for_stable(fp, timeout=30.0):
@@ -645,7 +674,7 @@ class DownloadHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         fp = event.src_path
-        if _is_temp_file(fp):
+        if _is_temp_file(fp) or _is_own_report(fp):
             return
         with self._lock:
             if fp in self._seen:
@@ -657,7 +686,7 @@ class DownloadHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         dest = event.dest_path
-        if _is_temp_file(event.src_path) and not _is_temp_file(dest):
+        if _is_temp_file(event.src_path) and not _is_temp_file(dest) and not _is_own_report(dest):
             with self._lock:
                 if dest in self._seen:
                     return
@@ -741,12 +770,12 @@ def main():
                 iid = result.get("incident_id", "?")
                 print(f"[+] {sev} — #{iid}")
 
-                deleted = _show_result_popup(fn, fp, result, backend)
+                action = _show_result_popup(fn, fp, result, backend)
 
-                if deleted:
+                if action.get("deleted"):
                     print(f"[x] File deleted: {fn}")
 
-                if browser:
+                if browser and action.get("open_browser", True):
                     webbrowser.open(FRONTEND_URL)
 
             except Exception as e:

@@ -482,6 +482,65 @@ def _build_source_reputation_section(inc, sty):
     return elements
 
 
+def _build_propagation_chain_section(inc, sty):
+    """Propagation chain banner — shows how malware spread across sources."""
+    chain_data = _safe_dict(inc.get("propagation_chain"))
+    if not chain_data.get("chain_detected"):
+        return []
+
+    elements = []
+    chain = _safe_list(chain_data.get("chain"))
+    chain_len = chain_data.get("chain_length", len(chain))
+    message = chain_data.get("chain_message", "")
+
+    bg = HexColor("#fde8e8")       # red tint
+    border_c = HexColor("#b91c1c")
+
+    # Build chain arrow string: Source1 (#5) → Source2 (#8) → Source3 (#12)
+    chain_parts = []
+    for node in chain:
+        node = _safe_dict(node)
+        src = node.get("source", "?")
+        iid = node.get("incident_id", "?")
+        chain_parts.append(f"{_esc(str(src))} (#{iid})")
+    chain_str = "  \\u2192  ".join(chain_parts) if chain_parts else "N/A"
+
+    title_text = f"\\u26a0  ATTACK PROPAGATION CHAIN DETECTED — {chain_len} SOURCES"
+    title_p = Paragraph(title_text, sty["corr_title"])
+
+    body_parts = [
+        f"<b>Chain:</b>  {chain_str}",
+        "",
+        f"This malware has been observed spreading across <b>{chain_len} distinct sources</b>. "
+        "Each hop indicates the file was forwarded from one compromised host to another.",
+        "",
+        "<i>All sources in this chain should be investigated and isolated immediately. "
+        "This pattern is consistent with active malware propagation or a coordinated attack.</i>",
+    ]
+    body_p = Paragraph("<br/>".join(body_parts), sty["corr_body"])
+
+    inner = Table(
+        [[title_p], [body_p]],
+        colWidths=[CONTENT_W - 16],
+    )
+    inner.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), bg),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (0, 0), 8),
+                ("BOTTOMPADDING", (-1, -1), (-1, -1), 8),
+                ("ROUNDEDCORNERS", [4, 4, 4, 4]),
+                ("BOX", (0, 0), (-1, -1), 0.5, border_c),
+            ]
+        )
+    )
+    elements.append(inner)
+    elements.append(Spacer(1, 10))
+    return elements
+
+
 def _build_metadata_table(inc, sty):
     """Two-column label/value metadata table."""
     elements = []
@@ -924,6 +983,9 @@ def generate_pdf_report(incident: dict) -> bytes:
 
         # 2.5 — Source reputation (conditional — only if source info exists)
         story.extend(_build_source_reputation_section(incident, sty))
+
+        # 2.6 — Propagation chain (conditional — only if chain detected)
+        story.extend(_build_propagation_chain_section(incident, sty))
 
         # 3 — File metadata table
         story.extend(_build_metadata_table(incident, sty))
